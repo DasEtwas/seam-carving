@@ -21,7 +21,7 @@ fn main() {
                 .short("i")
                 .long("input")
                 .value_name("FILE")
-                .help("Input file")
+                .help("Input file path")
                 .required(true)
                 .takes_value(true),
         )
@@ -39,8 +39,8 @@ fn main() {
                 .short("l")
                 .long("length")
                 .value_name("SECONDS")
-                .default_value("1")
-                .help("GIF length in seconds")
+                .default_value("1.0")
+                .help("GIF length in seconds (float)")
                 .takes_value(true),
         )
         .arg(
@@ -49,7 +49,7 @@ fn main() {
                 .long("scale")
                 .value_name("PERCENT")
                 .default_value("10")
-                .help("How much to downscale the image")
+                .help("Final scale of the last frame in percent (float)")
                 .takes_value(true),
         )
         .arg(
@@ -58,7 +58,7 @@ fn main() {
                 .long("fps")
                 .value_name("FPS")
                 .default_value("20")
-                .help("GIF FPS")
+                .help("GIF FPS, is converted into GIF units (10ms) (float)")
                 .takes_value(true),
         )
         .arg(
