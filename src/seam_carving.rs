@@ -1,6 +1,6 @@
 use std::{ops::Deref};
 
-use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, Pixel, Rgb};
+use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, Pixel, Rgba};
 
 pub struct FastImage<T> {
     data: Vec<T>,
@@ -102,7 +102,7 @@ pub fn resize(image: &DynamicImage, new_width: u32, new_height: u32) -> DynamicI
 pub fn maximize_seam(image: &DynamicImage, new_width: u32) -> DynamicImage {
     let current_width = image.dimensions().0;
 
-    let mut out_a = FastImage::from_image(&image.to_rgb());
+    let mut out_a = FastImage::from_image(&image.to_rgba());
     let mut out_b = FastImage::new(out_a.width, out_a.height, out_a.get_pixel(0, 0));
 
     let mut swap = false;
@@ -125,16 +125,16 @@ pub fn maximize_seam(image: &DynamicImage, new_width: u32) -> DynamicImage {
     }
 
     if swap {
-        DynamicImage::ImageRgb8(out_b.into_image())
+        DynamicImage::ImageRgba8(out_b.into_image())
     } else {
-        DynamicImage::ImageRgb8(out_a.into_image())
+        DynamicImage::ImageRgba8(out_a.into_image())
     }
 }
 
 #[inline(always)]
-pub fn shift_maximize(image: &FastImage<Rgb<u8>>, output: &mut FastImage<Rgb<u8>>, seam_path: Vec<usize>) {
+pub fn shift_maximize(image: &FastImage<Rgba<u8>>, output: &mut FastImage<Rgba<u8>>, seam_path: Vec<usize>) {
     let (width, height) = image.dimensions();
-    output.maximize(width + 1, height, &Rgb { data: [0, 0, 0] });
+    output.maximize(width + 1, height, &Rgba { data: [0, 0, 0,0] });
 
     for y in 0..height {
         for x in 0..(width + 1) {
@@ -150,6 +150,7 @@ pub fn shift_maximize(image: &FastImage<Rgb<u8>>, output: &mut FastImage<Rgb<u8>
                     ((right.data[0] as u16 + left.data[0] as u16) / 2) as u8,
                     ((right.data[1] as u16 + left.data[1] as u16) / 2) as u8,
                     ((right.data[2] as u16 + left.data[2] as u16) / 2) as u8,
+                    ((right.data[3] as u16 + left.data[3] as u16) / 2) as u8,
                 ];
                 left
             } else {
@@ -164,7 +165,7 @@ pub fn shift_maximize(image: &FastImage<Rgb<u8>>, output: &mut FastImage<Rgb<u8>
 pub fn minimize_seam(image: &DynamicImage, new_width: u32) -> DynamicImage {
     let current_width = image.dimensions().0;
 
-    let mut out_a = FastImage::from_image(&image.to_rgb());
+    let mut out_a = FastImage::from_image(&image.to_rgba());
     let mut out_b = FastImage::new(out_a.width, out_a.height, out_a.get_pixel(0, 0));
 
     let mut swap = false;
@@ -188,14 +189,14 @@ pub fn minimize_seam(image: &DynamicImage, new_width: u32) -> DynamicImage {
     }
 
     if swap {
-        DynamicImage::ImageRgb8(out_b.into_image())
+        DynamicImage::ImageRgba8(out_b.into_image())
     } else {
-        DynamicImage::ImageRgb8(out_a.into_image())
+        DynamicImage::ImageRgba8(out_a.into_image())
     }
 }
 
 #[inline(always)]
-pub fn shift_minimize(image: &FastImage<Rgb<u8>>, output: &mut FastImage<Rgb<u8>>, seam_path: Vec<usize>) {
+pub fn shift_minimize(image: &FastImage<Rgba<u8>>, output: &mut FastImage<Rgba<u8>>, seam_path: Vec<usize>) {
     let (width, height) = image.dimensions();
     output.minimize(width - 1, height);
 
@@ -298,14 +299,15 @@ pub fn add_waterfall(image: &mut FastImage<Luma<u16>>) {
 }
 
 #[inline(always)]
-pub fn energy(image: &FastImage<Rgb<u8>>) -> FastImage<Luma<u16>> {
+pub fn energy(image: &FastImage<Rgba<u8>>) -> FastImage<Luma<u16>> {
     let (width, height) = image.dimensions();
 
     let mut output: FastImage<Luma<u16>> = FastImage::new(width, height, &Luma { data: [0] });
 
     // cache warming
-    let mut sum = 0;
-    image.data.iter().for_each(|x| sum += x.data[0]);
+    let mut sum = 0u64;
+    image.data.iter().for_each(|x| sum += x.data[0] as u64);
+    drop(sum);
 
     for x in 0..width {
         for y in 0..height {
@@ -375,7 +377,7 @@ pub fn energy(image: &FastImage<Rgb<u8>>) -> FastImage<Luma<u16>> {
 
 // uses i16 so code energy() doesn't need to cast it from u16
 #[inline(always)]
-fn luma(rgb: &Rgb<u8>) -> i16 {
+fn luma(rgb: &Rgba<u8>) -> i16 {
     // real luma variant
     // (rgb.data[0] as f32 * 0.299 + rgb.data[1] as f32 * 0.587 + rgb.data[2] as f32 * 0.11) as i16
     rgb.data[0] as i16 + rgb.data[1] as i16 + rgb.data[2] as i16

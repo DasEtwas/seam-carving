@@ -103,8 +103,9 @@ fn main() {
         }
     };
 
+    let delay = ((1.0 / fps) * 10.0).floor() as u16;
+    let fps = 1.0 / delay as f32;
     let frames = fps * length;
-    let delay = ((1.0 / fps) * 10.0).round() as u16;
 
     let image = match image::open(input) {
         Ok(val) => val,
@@ -133,7 +134,7 @@ fn main() {
 
     let start = Instant::now();
     thread::spawn(move || {
-        (0..frames.round() as usize).into_par_iter().for_each({
+        (0..frames as usize).into_par_iter().for_each({
             let collector = collector.clone();
 
             move |i| {
