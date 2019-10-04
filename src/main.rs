@@ -188,7 +188,7 @@ fn main() {
                     let frame_image = seam_carving::resize(&current_image, new_width, new_height)
                         .resize_exact(width as u32, height as u32, FilterType::Nearest);
 
-                    if last_image.read().width() < frame_image.width() {
+                    if frame_image.width() < last_image.read().width() {
                         *last_image.write() = frame_image.clone();
                     }
 
