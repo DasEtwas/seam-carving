@@ -9,6 +9,8 @@ use clap::{App, Arg};
 use gifski::{progress::ProgressBar, Settings};
 use image::{DynamicImage, FilterType, GenericImageView};
 use imgref::Img;
+use parking_lot::RwLock;
+use rayon::prelude::*;
 use rgb::RGBA8;
 
 mod seam_carving;
@@ -70,10 +72,25 @@ fn main() {
                 .help("GIF Quality [1 - 100]")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("single_threaded")
+                .short("t")
+                .long("single")
+                .default_value("false")
+                .help("If only one thread should be used.")
+                .takes_value(true),
+        )
         .get_matches();
 
     let input = clap.value_of("input").unwrap();
     let output = clap.value_of("output").unwrap();
+    let single: bool = match clap.value_of("single_threaded").unwrap().parse() {
+        Ok(val) => val,
+        Err(err) => {
+            println!("Error while parsing single_threaded: {}", err);
+            return;
+        }
+    };
     let length: f32 = match clap.value_of("length").unwrap().parse() {
         Ok(val) => val,
         Err(err) => {
@@ -133,27 +150,59 @@ fn main() {
     println!("Calculating...");
 
     let start = Instant::now();
-    thread::spawn(move || {
-        let mut last_frame = image;
 
-        (0..frames as usize).for_each(|i| {
-            let new_width = lerp(width, width * scale, i as f32 / frames as f32) as u32;
-            let new_height = lerp(height, height * scale, i as f32 / frames as f32) as u32;
+    if single {
+        thread::spawn(move || {
+            let mut last_frame = image;
 
-            let frame_image = seam_carving::resize(&last_frame, new_width, new_height)
-                .resize_exact(width as u32, height as u32, FilterType::Nearest);
+            (0..frames as usize).for_each(|i| {
+                let new_width = lerp(width, width * scale, i as f32 / frames as f32) as u32;
+                let new_height = lerp(height, height * scale, i as f32 / frames as f32) as u32;
 
-            last_frame = frame_image.clone();
+                let frame_image = seam_carving::resize(&last_frame, new_width, new_height)
+                    .resize_exact(width as u32, height as u32, FilterType::Nearest);
 
-            let frame = image_to_frame(&frame_image);
+                last_frame = frame_image.clone();
 
-            collector
-                .lock()
-                .unwrap()
-                .add_frame_rgba(i, frame, delay)
-                .expect("Failed to add frame");
+                let frame = image_to_frame(&frame_image);
+
+                collector
+                    .lock()
+                    .unwrap()
+                    .add_frame_rgba(i, frame, delay)
+                    .expect("Failed to add frame");
+            });
         });
-    });
+    } else {
+        let last_image = Arc::new(RwLock::new(image));
+
+        thread::spawn({
+            let last_image = last_image.clone();
+
+            move || {
+                (0..frames as usize).into_par_iter().for_each(|i| {
+                    let new_width = lerp(width, width * scale, i as f32 / frames as f32) as u32;
+                    let new_height = lerp(height, height * scale, i as f32 / frames as f32) as u32;
+
+                    let current_image = last_image.read().clone();
+                    let frame_image = seam_carving::resize(&current_image, new_width, new_height)
+                        .resize_exact(width as u32, height as u32, FilterType::Nearest);
+
+                    if last_image.read().width() < frame_image.width() {
+                        *last_image.write() = frame_image.clone();
+                    }
+
+                    let frame = image_to_frame(&frame_image);
+
+                    collector
+                        .lock()
+                        .unwrap()
+                        .add_frame_rgba(i, frame, delay)
+                        .expect("Failed to add frame");
+                });
+            }
+        });
+    }
 
     let output_result = OpenOptions::new()
         .write(true)
