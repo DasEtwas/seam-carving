@@ -76,21 +76,13 @@ fn main() {
             Arg::with_name("single_threaded")
                 .short("t")
                 .long("single")
-                .default_value("false")
-                .help("If only one thread should be used.")
-                .takes_value(true),
+                .help("If only one thread should be used."),
         )
         .get_matches();
 
     let input = clap.value_of("input").unwrap();
     let output = clap.value_of("output").unwrap();
-    let single: bool = match clap.value_of("single_threaded").unwrap().parse() {
-        Ok(val) => val,
-        Err(err) => {
-            println!("Error while parsing single_threaded: {}", err);
-            return;
-        }
-    };
+    let single = clap.occurrences_of("single_threaded") != 0;
     let length: f32 = match clap.value_of("length").unwrap().parse() {
         Ok(val) => val,
         Err(err) => {
