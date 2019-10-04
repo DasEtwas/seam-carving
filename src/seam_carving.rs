@@ -1,4 +1,4 @@
-use std::{ops::Deref};
+use std::ops::Deref;
 
 use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, Pixel, Rgba};
 
@@ -8,7 +8,10 @@ pub struct FastImage<T> {
     height: u32,
 }
 
-impl<T> FastImage<T> where T: Pixel + 'static {
+impl<T> FastImage<T>
+where
+    T: Pixel + 'static,
+{
     #[inline(always)]
     pub fn new(width: u32, height: u32, t: &T) -> FastImage<T> {
         FastImage {
@@ -18,7 +21,7 @@ impl<T> FastImage<T> where T: Pixel + 'static {
         }
     }
 
-    pub fn from_image<C: Deref<Target=[T::Subpixel]>>(image: &ImageBuffer<T, C>) -> FastImage<T> {
+    pub fn from_image<C: Deref<Target = [T::Subpixel]>>(image: &ImageBuffer<T, C>) -> FastImage<T> {
         let w = image.width();
         let h = image.height();
 
@@ -132,9 +135,13 @@ pub fn maximize_seam(image: &DynamicImage, new_width: u32) -> DynamicImage {
 }
 
 #[inline(always)]
-pub fn shift_maximize(image: &FastImage<Rgba<u8>>, output: &mut FastImage<Rgba<u8>>, seam_path: Vec<usize>) {
+pub fn shift_maximize(
+    image: &FastImage<Rgba<u8>>,
+    output: &mut FastImage<Rgba<u8>>,
+    seam_path: Vec<usize>,
+) {
     let (width, height) = image.dimensions();
-    output.maximize(width + 1, height, &Rgba { data: [0, 0, 0,0] });
+    output.maximize(width + 1, height, &Rgba { data: [0, 0, 0, 0] });
 
     for y in 0..height {
         for x in 0..(width + 1) {
@@ -196,7 +203,11 @@ pub fn minimize_seam(image: &DynamicImage, new_width: u32) -> DynamicImage {
 }
 
 #[inline(always)]
-pub fn shift_minimize(image: &FastImage<Rgba<u8>>, output: &mut FastImage<Rgba<u8>>, seam_path: Vec<usize>) {
+pub fn shift_minimize(
+    image: &FastImage<Rgba<u8>>,
+    output: &mut FastImage<Rgba<u8>>,
+    seam_path: Vec<usize>,
+) {
     let (width, height) = image.dimensions();
     output.minimize(width - 1, height);
 
@@ -356,7 +367,8 @@ pub fn energy(image: &FastImage<Rgba<u8>>) -> FastImage<Luma<u16>> {
                 //LB  RB
 
                 //(left - right + top - bottom).abs() // + (middle - left).abs() + (middle - right).abs() + (middle - bottom).abs() + (middle - top).abs()
-                let sobel_gradient = righttop + rightbottom + (right - left) * 2 - lefttop - leftbottom;
+                let sobel_gradient =
+                    righttop + rightbottom + (right - left) * 2 - lefttop - leftbottom;
                 if sobel_gradient < 0 {
                     -sobel_gradient as u16
                 } else {

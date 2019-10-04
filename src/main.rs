@@ -1,17 +1,17 @@
-mod seam_carving;
-
-use clap::{App, Arg};
-use gifski::{progress::ProgressBar, Settings};
-use image::{DynamicImage, FilterType, GenericImageView};
-use imgref::Img;
-use rayon::prelude::*;
-use rgb::RGBA8;
 use std::{
     fs::OpenOptions,
     sync::{Arc, Mutex},
     thread,
     time::Instant,
 };
+
+use clap::{App, Arg};
+use gifski::{progress::ProgressBar, Settings};
+use image::{DynamicImage, FilterType, GenericImageView};
+use imgref::Img;
+use rgb::RGBA8;
+
+mod seam_carving;
 
 fn main() {
     let clap = App::new("Animated seam carving")
@@ -103,8 +103,8 @@ fn main() {
         }
     };
 
-    let delay = ((1.0 / fps) * 10.0).floor() as u16;
-    let fps = 1.0 / delay as f32;
+    let delay = (((1.0 / fps) * 100.0).floor() as u16).max(1);
+    let fps = 1.0 / (delay as f32 / 100.0);
     let frames = fps * length;
 
     let image = match image::open(input) {
@@ -134,29 +134,26 @@ fn main() {
 
     let start = Instant::now();
     thread::spawn(move || {
-        (0..frames as usize).into_par_iter().for_each({
-            let collector = collector.clone();
+        let mut last_frame = image;
 
-            move |i| {
-                let new_width = lerp(width, width * scale, i as f32 / frames as f32) as u32;
-                let new_height = lerp(height, height * scale, i as f32 / frames as f32) as u32;
+        (0..frames as usize).for_each(|i| {
+            let new_width = lerp(width, width * scale, i as f32 / frames as f32) as u32;
+            let new_height = lerp(height, height * scale, i as f32 / frames as f32) as u32;
 
-                let frame_image = seam_carving::resize(&image, new_width, new_height).resize_exact(
-                    width as u32,
-                    height as u32,
-                    FilterType::Nearest,
-                );
-                let frame = image_to_frame(&frame_image);
+            let frame_image = seam_carving::resize(&last_frame, new_width, new_height)
+                .resize_exact(width as u32, height as u32, FilterType::Nearest);
 
-                collector
-                    .lock()
-                    .unwrap()
-                    .add_frame_rgba(i, frame, delay)
-                    .expect("Failed to add frame");
-            }
+            last_frame = frame_image.clone();
+
+            let frame = image_to_frame(&frame_image);
+
+            collector
+                .lock()
+                .unwrap()
+                .add_frame_rgba(i, frame, delay)
+                .expect("Failed to add frame");
         });
     });
-
 
     let output_result = OpenOptions::new()
         .write(true)
