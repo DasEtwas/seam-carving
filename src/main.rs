@@ -10,7 +10,7 @@ use gifski::{progress::ProgressBar, Settings};
 use image::{DynamicImage, FilterType, GenericImageView};
 use imgref::Img;
 use parking_lot::RwLock;
-use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use rgb::RGBA8;
 
 mod seam_carving;
@@ -175,28 +175,42 @@ fn main() {
             let last_image = last_image.clone();
 
             move || {
-                (0..frames as usize).into_par_iter().for_each(|i| {
-                    let new_width = lerp(width, width * scale, i as f32 / frames as f32) as u32;
-                    let new_height = lerp(height, height * scale, i as f32 / frames as f32) as u32;
+                let pool = ThreadPoolBuilder::new()
+                    .num_threads(num_cpus::get())
+                    .build()
+                    .unwrap();
 
-                    let current_image = last_image.read().clone();
-                    let frame_image = seam_carving::resize(&current_image, new_width, new_height);
+                (0..frames as usize).for_each(|i| {
+                    pool.spawn_fifo({
+                        let last_image = last_image.clone();
+                        let collector = collector.clone();
+                        move || {
+                            let new_width =
+                                lerp(width, width * scale, i as f32 / frames as f32) as u32;
+                            let new_height =
+                                lerp(height, height * scale, i as f32 / frames as f32) as u32;
 
-                    if frame_image.width() < last_image.read().width() {
-                        *last_image.write() = frame_image.clone();
-                    }
+                            let current_image = last_image.read().clone();
+                            let frame_image =
+                                seam_carving::resize(&current_image, new_width, new_height);
 
-                    let frame = image_to_frame(&frame_image.resize_exact(
-                        width as u32,
-                        height as u32,
-                        FilterType::Nearest,
-                    ));
+                            if frame_image.width() < last_image.read().width() {
+                                *last_image.write() = frame_image.clone();
+                            }
 
-                    collector
-                        .lock()
-                        .unwrap()
-                        .add_frame_rgba(i, frame, delay)
-                        .expect("Failed to add frame");
+                            let frame = image_to_frame(&frame_image.resize_exact(
+                                width as u32,
+                                height as u32,
+                                FilterType::Nearest,
+                            ));
+
+                            collector
+                                .lock()
+                                .unwrap()
+                                .add_frame_rgba(i, frame, delay)
+                                .expect("Failed to add frame");
+                        }
+                    })
                 });
             }
         });
