@@ -139,7 +139,7 @@ fn main() {
 
     let collector = Arc::new(Mutex::new(collector));
 
-    println!("Calculating...");
+    println!("Carving seams..");
 
     let start = Instant::now();
 
@@ -151,12 +151,15 @@ fn main() {
                 let new_width = lerp(width, width * scale, i as f32 / frames as f32) as u32;
                 let new_height = lerp(height, height * scale, i as f32 / frames as f32) as u32;
 
-                let frame_image = seam_carving::resize(&last_frame, new_width, new_height)
-                    .resize_exact(width as u32, height as u32, FilterType::Nearest);
+                let frame_image = seam_carving::resize(&last_frame, new_width, new_height);
 
                 last_frame = frame_image.clone();
 
-                let frame = image_to_frame(&frame_image);
+                let frame = image_to_frame(&frame_image.resize_exact(
+                    width as u32,
+                    height as u32,
+                    FilterType::Nearest,
+                ));
 
                 collector
                     .lock()
@@ -177,14 +180,17 @@ fn main() {
                     let new_height = lerp(height, height * scale, i as f32 / frames as f32) as u32;
 
                     let current_image = last_image.read().clone();
-                    let frame_image = seam_carving::resize(&current_image, new_width, new_height)
-                        .resize_exact(width as u32, height as u32, FilterType::Nearest);
+                    let frame_image = seam_carving::resize(&current_image, new_width, new_height);
 
                     if frame_image.width() < last_image.read().width() {
                         *last_image.write() = frame_image.clone();
                     }
 
-                    let frame = image_to_frame(&frame_image);
+                    let frame = image_to_frame(&frame_image.resize_exact(
+                        width as u32,
+                        height as u32,
+                        FilterType::Nearest,
+                    ));
 
                     collector
                         .lock()
