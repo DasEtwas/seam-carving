@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use rayon::ThreadPoolBuilder;
 use rgb::RGBA8;
 
-mod seam_carving;
+pub mod seam_carving;
 
 fn main() {
     let clap = App::new("Animated seam carving")
@@ -151,7 +151,8 @@ fn main() {
                 let new_width = lerp(width, width * scale, i as f32 / frames as f32) as u32;
                 let new_height = lerp(height, height * scale, i as f32 / frames as f32) as u32;
 
-                let frame_image = seam_carving::resize(&last_frame, new_width, new_height);
+                let frame_image =
+                    seam_carving::easy_resize(&last_frame, new_width as usize, new_height as usize);
 
                 last_frame = frame_image.clone();
 
@@ -191,8 +192,11 @@ fn main() {
                                 lerp(height, height * scale, i as f32 / frames as f32) as u32;
 
                             let current_image = last_image.read().clone();
-                            let frame_image =
-                                seam_carving::resize(&current_image, new_width, new_height);
+                            let frame_image = seam_carving::easy_resize(
+                                &current_image,
+                                new_width as usize,
+                                new_height as usize,
+                            );
 
                             if frame_image.width() < last_image.read().width() {
                                 *last_image.write() = frame_image.clone();
