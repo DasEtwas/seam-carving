@@ -1,6 +1,7 @@
 use std::ops::{Deref, Range};
 
 use image::{DynamicImage, ImageBuffer, Pixel, Rgba};
+use map_in_place::MapVecInPlace;
 
 pub trait FastImagePixel: Copy + Clone {}
 
@@ -492,6 +493,7 @@ where
     let (width, height) = image.dimensions();
 
     let mut image_luma: FastImage<u16> = FastImage::new(width, height, 0);
+    let mut output: FastImage<i16> = FastImage::new(width, height, 0);
 
     let mut temp_buf = vec![0; width];
     for row_idx in 0..image_luma.height {
@@ -505,46 +507,39 @@ where
         }
     }
 
-    // 00 10 20
-    // 01 11 21
-    // 02 21 22
-    let kernel_offset: [isize; 3 * 3] = {
-        let width = width as isize;
+    let kernel_offsets = [
+        ((width as i32) + 1, -1, -1),
+        (width as i32, 0, -1),
+        ((width as i32) - 1, 1, -1),
+        (1, -1, 0),
+        (0, 0, 0),
+        (-1, 1, 0),
+        (-(width as i32) + 1, -1, 1),
+        (-(width as i32), 0, 1),
+        (-(width as i32) - 1, 1, 1),
+    ];
 
-        [
-            -width - 1,
-            -width,
-            -width + 1,
-            -1,
-            0,
-            1,
-            width - 1,
-            width,
-            width + 1,
-        ]
-    };
+    for ((kernel_offset, kx, ky), kernel) in
+        kernel_offsets.iter().cloned().zip(kernel.iter().cloned())
+    {
+        for row_idx in (ky.max(0) as usize * width..(height as i32 + ky.min(0)) as usize * width)
+            .step_by(width)
+        {
+            for x in kx.max(0) as usize..(width as i32 + kx.min(0)) as usize {
+                unsafe {
+                    *output
+                        .data
+                        .get_unchecked_mut(((row_idx + x) as i32 + kernel_offset) as usize) +=
+                        *image_luma.data.get_unchecked(row_idx + x) as i16 * kernel;
+                }
+            }
+        }
+    }
 
-    let image_len = image_luma.data.len();
-
-    FastImage::from_data(
+    FastImage {
         width,
         height,
-        (0..image_len)
-            .map(|i| {
-                kernel
-                    .iter()
-                    .zip(kernel_offset.iter())
-                    .map(|(kernel_coeff, texel_offs)| unsafe {
-                        *image_luma.data.get_unchecked(
-                            (i as isize + *texel_offs)
-                                .max(0)
-                                .min(image_len as isize - 1) as usize,
-                        ) as i16
-                            * *kernel_coeff
-                    })
-                    .sum::<i16>()
-                    .abs() as u16
-            })
-            .collect(),
-    )
+        width_stride: width,
+        data: output.data.map_in_place(|int| int.abs() as u16),
+    }
 }
