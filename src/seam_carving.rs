@@ -467,7 +467,7 @@ pub fn add_waterfall(image: &mut FastImage<u16>) {
             image.put_pixel_unchecked(0, y, *image.get_pixel_unchecked(0, y) + left.min(right));
         }
 
-        for x in 1..width - 2 {
+        for x in 1..width - 1 {
             unsafe {
                 // find the pixel with the lowest value of the three pixels above
                 image.put_pixel_unchecked(
