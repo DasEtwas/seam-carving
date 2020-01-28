@@ -457,26 +457,41 @@ pub fn add_waterfall(image: &mut FastImage<u16>) {
     let (width, height) = image.dimensions();
 
     for y in 1..height {
-        for x in 0..width {
+        //P1P2P3
+        //  CP
+
+        // left border
+        unsafe {
+            let left = *image.get_pixel_unchecked(0, y - 1);
+            let right = *image.get_pixel_unchecked(1, y - 1);
+            image.put_pixel_unchecked(0, y, *image.get_pixel_unchecked(0, y) + left.min(right));
+        }
+
+        for x in 1..width - 2 {
             unsafe {
-                //P1P2P3
-                //  CP
-
-                let prev_value = *image.get_pixel_unchecked(x, y);
-
-                // find the pixel of the three pixels above (x,y), set lowest_value_above to the value of the pixel with the lowest value
-                let mut lowest_value_above = u16::max_value();
-                for scan_x in
-                    if x != 0 { x - 1 } else { 0 }..=if x < width - 1 { x + 1 } else { width - 1 }
-                {
-                    let p = *image.get_pixel_unchecked(scan_x as usize, y - 1);
-                    if p < lowest_value_above {
-                        lowest_value_above = p;
-                    }
-                }
-
-                image.put_pixel_unchecked(x, y, lowest_value_above + prev_value);
+                // find the pixel with the lowest value of the three pixels above
+                image.put_pixel_unchecked(
+                    x,
+                    y,
+                    image.get_pixel_unchecked(x, y)
+                        + image.get_pixel_unchecked(x - 1, y - 1).min(
+                            image
+                                .get_pixel_unchecked(x, y - 1)
+                                .min(image.get_pixel_unchecked(x + 1, y - 1)),
+                        ),
+                );
             }
+        }
+
+        // right border
+        unsafe {
+            let right = *image.get_pixel_unchecked(width - 1, y - 1);
+            let left = *image.get_pixel_unchecked(width - 2, y - 1);
+            image.put_pixel_unchecked(
+                width - 1,
+                y,
+                *image.get_pixel_unchecked(width - 1, y) + left.min(right),
+            );
         }
     }
 }
