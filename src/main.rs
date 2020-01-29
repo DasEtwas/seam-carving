@@ -1,10 +1,3 @@
-use std::{
-    fs::OpenOptions,
-    sync::{Arc, Mutex},
-    thread,
-    time::Instant,
-};
-
 use clap::{App, Arg};
 use gifski::{progress::ProgressBar, Settings};
 use image::{DynamicImage, FilterType, GenericImageView};
@@ -12,6 +5,7 @@ use imgref::Img;
 use parking_lot::RwLock;
 use rayon::ThreadPoolBuilder;
 use rgb::RGBA8;
+use std::{fs::OpenOptions, sync::Arc, thread, time::Instant};
 
 pub mod seam_carving;
 
@@ -128,7 +122,14 @@ fn main() {
     let width = dimensions.0 as f32;
     let height = dimensions.1 as f32;
 
-    let (collector, writer) = gifski::new(Settings {
+    if width * scale < 3.0 {
+        println!("target width is smaller than 3! will clamp to 3 (try adjusting scale)")
+    }
+    if height * scale < 3.0 {
+        println!("target height is smaller than 3! will clamp to 3 (try adjusting scale)")
+    }
+
+    let (mut collector, writer) = gifski::new(Settings {
         width: Some(dimensions.0),
         height: Some(dimensions.1),
         quality,
@@ -137,40 +138,59 @@ fn main() {
     })
     .expect("Failed to create encoder");
 
-    let collector = Arc::new(Mutex::new(collector));
-
     println!("Carving seams..");
 
     let start = Instant::now();
+
+    let upscaling = scale > 1.0;
 
     if single {
         thread::spawn(move || {
             let mut last_frame = image;
 
             (0..frames as usize).for_each(|i| {
-                let new_width = lerp(width, width * scale, i as f32 / frames as f32) as u32;
-                let new_height = lerp(height, height * scale, i as f32 / frames as f32) as u32;
+                let new_width = (lerp(
+                    width,
+                    width * scale,
+                    i as f32 / (frames as usize - 1).max(1) as f32,
+                ) as u32)
+                    .max(3);
+                let new_height = (lerp(
+                    height,
+                    height * scale,
+                    i as f32 / (frames as usize - 1).max(1) as f32,
+                ) as u32)
+                    .max(3);
 
                 let frame_image =
                     seam_carving::easy_resize(&last_frame, new_width as usize, new_height as usize);
 
                 last_frame = frame_image.clone();
 
-                let frame = image_to_frame(&frame_image.resize_exact(
-                    width as u32,
-                    height as u32,
-                    FilterType::Nearest,
-                ));
+                let frame = if upscaling {
+                    image_to_frame(&frame_image.resize_exact(
+                        (width * scale) as u32,
+                        (height * scale) as u32,
+                        FilterType::Nearest,
+                    ))
+                } else {
+                    image_to_frame(&frame_image.resize_exact(
+                        width as u32,
+                        height as u32,
+                        FilterType::Nearest,
+                    ))
+                };
 
                 collector
-                    .lock()
-                    .unwrap()
                     .add_frame_rgba(i, frame, delay)
                     .expect("Failed to add frame");
             });
         });
     } else {
         let last_image = Arc::new(RwLock::new(image));
+
+        let (gif_renderer_sender, gif_renderer_receiver) =
+            crossbeam_channel::bounded((frames as usize).min(300));
 
         thread::spawn({
             let last_image = last_image.clone();
@@ -184,38 +204,72 @@ fn main() {
                 (0..frames as usize).for_each(|i| {
                     pool.spawn_fifo({
                         let last_image = last_image.clone();
-                        let collector = collector.clone();
+                        let gif_renderer_sender = gif_renderer_sender.clone();
+
                         move || {
-                            let new_width =
-                                lerp(width, width * scale, i as f32 / frames as f32) as u32;
-                            let new_height =
-                                lerp(height, height * scale, i as f32 / frames as f32) as u32;
+                            let new_width = (lerp(
+                                width,
+                                width * scale,
+                                i as f32 / (frames as usize - 1).max(1) as f32,
+                            ) as u32)
+                                .max(3);
+
+                            let new_height = (lerp(
+                                height,
+                                height * scale,
+                                i as f32 / (frames as usize - 1).max(1) as f32,
+                            ) as u32)
+                                .max(3);
 
                             let current_image = last_image.read().clone();
+
                             let frame_image = seam_carving::easy_resize(
                                 &current_image,
                                 new_width as usize,
                                 new_height as usize,
                             );
 
-                            if frame_image.width() < last_image.read().width() {
-                                *last_image.write() = frame_image.clone();
+                            {
+                                let mut last_image = last_image.write();
+                                if upscaling {
+                                    if frame_image.width() > last_image.width() {
+                                        *last_image = frame_image.clone();
+                                    }
+                                } else {
+                                    if frame_image.width() < last_image.width() {
+                                        *last_image = frame_image.clone();
+                                    }
+                                }
                             }
 
-                            let frame = image_to_frame(&frame_image.resize_exact(
-                                width as u32,
-                                height as u32,
-                                FilterType::Nearest,
-                            ));
+                            let frame = if upscaling {
+                                image_to_frame(&frame_image.resize_exact(
+                                    (width * scale) as u32,
+                                    (height * scale) as u32,
+                                    FilterType::Nearest,
+                                ))
+                            } else {
+                                image_to_frame(&frame_image.resize_exact(
+                                    width as u32,
+                                    height as u32,
+                                    FilterType::Nearest,
+                                ))
+                            };
 
-                            collector
-                                .lock()
-                                .unwrap()
-                                .add_frame_rgba(i, frame, delay)
-                                .expect("Failed to add frame");
+                            gif_renderer_sender
+                                .send((i, frame))
+                                .expect("channel disconnected");
                         }
                     })
                 });
+            }
+        });
+
+        thread::spawn(move || {
+            while let Ok((i, frame)) = gif_renderer_receiver.recv() {
+                collector
+                    .add_frame_rgba(i, frame, delay)
+                    .expect("Failed to add frame");
             }
         });
     }
@@ -225,6 +279,7 @@ fn main() {
         .truncate(true)
         .create(true)
         .open(output);
+
     let output = match output_result {
         Ok(val) => val,
         Err(err) => {
