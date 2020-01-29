@@ -1,6 +1,10 @@
 # seam carving
 Generates content aware resized gifs
 
+## Safety
+
+The main priority of this project is runtime performance. `unsafe` is used readily and safety should be guaranteed by optional checks (feature `fastimage_debug`).
+
 ## Example
 
 <img src="example.gif" alt="Example gif" width="200"/>
