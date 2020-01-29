@@ -462,10 +462,6 @@ pub fn shift_maximize<I, T>(
                 },
             );
 
-            out_row_buf[width - 1..]
-                .iter_mut()
-                .for_each(|x| *(x as *mut _ as *mut [u8; 4]) = [0, 0, 255, 255]);
-
             output.set_row_unchecked(0..width + 1, row_idx, &out_row_buf);
 
             out_row_buf.pop();
