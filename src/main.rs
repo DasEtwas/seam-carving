@@ -1,3 +1,4 @@
+use clap::value_t_or_exit;
 use clap::{App, Arg};
 use gifski::{progress::ProgressBar, Settings};
 use image::{DynamicImage, FilterType, GenericImageView};
@@ -10,7 +11,7 @@ use std::{fs::OpenOptions, sync::Arc, thread, time::Instant};
 pub mod seam_carving;
 
 fn main() {
-    let clap = App::new("Animated seam carving")
+    let matches = App::new("Animated seam carving")
         .author("Authors: DasEtwas, Friz64")
         .arg(
             Arg::with_name("input")
@@ -44,9 +45,32 @@ fn main() {
                 .short("s")
                 .long("scale")
                 .value_name("PERCENT")
-                .default_value("10")
                 .help("Final scale of the last frame in percent (float)")
-                .takes_value(true),
+                .takes_value(true)
+                .required_unless_all(&["xscale", "yscale"])
+                .conflicts_with_all(&["xscale", "yscale"]),
+        )
+        .arg(
+            Arg::with_name("xscale")
+                .short("w")
+                .long("xscale")
+                .value_name("XPERCENT")
+                .help("Final scale of the last frame's width in percent (float)")
+                .takes_value(true)
+                .conflicts_with("scale")
+                .required_unless("scale")
+                .requires("yscale"),
+        )
+        .arg(
+            Arg::with_name("yscale")
+                .short("h")
+                .long("yscale")
+                .value_name("YPERCENT")
+                .help("Final scale of the last frame's height in percent (float)")
+                .takes_value(true)
+                .conflicts_with("scale")
+                .required_unless("scale")
+                .requires("xscale"),
         )
         .arg(
             Arg::with_name("fps")
@@ -74,37 +98,27 @@ fn main() {
         )
         .get_matches();
 
-    let input = clap.value_of("input").unwrap();
-    let output = clap.value_of("output").unwrap();
-    let single = clap.occurrences_of("single_threaded") != 0;
-    let length: f32 = match clap.value_of("length").unwrap().parse() {
-        Ok(val) => val,
-        Err(err) => {
-            println!("Error while parsing fps: {}", err);
-            return;
+    let input = matches.value_of("input").unwrap();
+    let output = matches.value_of("output").unwrap();
+    let single = matches.occurrences_of("single_threaded") != 0;
+    let length = value_t_or_exit!(matches, "length", f32);
+
+    let (scale_x, scale_y) = {
+        match matches.value_of("scale") {
+            Some(_) => {
+                let val = value_t_or_exit!(matches, "scale", f32);
+                (val / 100.0, val / 100.0)
+            }
+            // xscale and yscale need to be set here
+            None => (
+                value_t_or_exit!(matches, "xscale", f32) / 100.0,
+                value_t_or_exit!(matches, "yscale", f32) / 100.0,
+            ),
         }
     };
-    let scale: f32 = match clap.value_of("scale").unwrap().parse::<f32>() {
-        Ok(val) => val / 100.0,
-        Err(err) => {
-            println!("Error while parsing scale: {}", err);
-            return;
-        }
-    };
-    let fps: f32 = match clap.value_of("fps").unwrap().parse() {
-        Ok(val) => val,
-        Err(err) => {
-            println!("Error while parsing fps: {}", err);
-            return;
-        }
-    };
-    let quality: u8 = match clap.value_of("quality").unwrap().parse() {
-        Ok(val) => val,
-        Err(err) => {
-            println!("Error while parsing quality: {}", err);
-            return;
-        }
-    };
+
+    let fps = value_t_or_exit!(matches, "fps", f32);
+    let quality = value_t_or_exit!(matches, "quality", u8);
 
     let delay = (((1.0 / fps) * 100.0).floor() as u16).max(1);
     let fps = 1.0 / (delay as f32 / 100.0);
@@ -122,16 +136,23 @@ fn main() {
     let width = dimensions.0 as f32;
     let height = dimensions.1 as f32;
 
-    if width * scale < 3.0 {
+    if width * scale_x < 3.0 {
         println!("target width is smaller than 3! will clamp to 3 (try adjusting scale)")
     }
-    if height * scale < 3.0 {
+    if height * scale_y < 3.0 {
         println!("target height is smaller than 3! will clamp to 3 (try adjusting scale)")
     }
 
+    let upscaling_x = scale_x > 1.0;
+    let upscaling_y = scale_y > 1.0;
+
     let (mut collector, writer) = gifski::new(Settings {
-        width: Some(dimensions.0),
-        height: Some(dimensions.1),
+        width: Some(if upscaling_x { width * scale_x } else { width } as u32),
+        height: Some(if upscaling_y {
+            height * scale_y
+        } else {
+            height
+        } as u32),
         quality,
         once: false,
         fast: false,
@@ -142,22 +163,20 @@ fn main() {
 
     let start = Instant::now();
 
-    let upscaling = scale > 1.0;
-
     if single {
         thread::spawn(move || {
             let mut last_frame = image;
 
-            (0..frames as usize).for_each(|i| {
+            for i in 0..frames as usize {
                 let new_width = (lerp(
                     width,
-                    width * scale,
+                    width * scale_x,
                     i as f32 / (frames as usize - 1).max(1) as f32,
                 ) as u32)
                     .max(3);
                 let new_height = (lerp(
                     height,
-                    height * scale,
+                    height * scale_y,
                     i as f32 / (frames as usize - 1).max(1) as f32,
                 ) as u32)
                     .max(3);
@@ -167,24 +186,20 @@ fn main() {
 
                 last_frame = frame_image.clone();
 
-                let frame = if upscaling {
-                    image_to_frame(&frame_image.resize_exact(
-                        (width * scale) as u32,
-                        (height * scale) as u32,
-                        FilterType::Nearest,
-                    ))
-                } else {
-                    image_to_frame(&frame_image.resize_exact(
-                        width as u32,
-                        height as u32,
-                        FilterType::Nearest,
-                    ))
-                };
+                let frame = image_to_frame(&frame_image.resize_exact(
+                    if upscaling_x { width * scale_x } else { width } as u32,
+                    if upscaling_y {
+                        height * scale_y
+                    } else {
+                        height
+                    } as u32,
+                    FilterType::Nearest,
+                ));
 
                 collector
                     .add_frame_rgba(i, frame, delay)
                     .expect("Failed to add frame");
-            });
+            }
         });
     } else {
         let last_image = Arc::new(RwLock::new(image));
@@ -209,14 +224,14 @@ fn main() {
                         move || {
                             let new_width = (lerp(
                                 width,
-                                width * scale,
+                                width * scale_x,
                                 i as f32 / (frames as usize - 1).max(1) as f32,
                             ) as u32)
                                 .max(3);
 
                             let new_height = (lerp(
                                 height,
-                                height * scale,
+                                height * scale_y,
                                 i as f32 / (frames as usize - 1).max(1) as f32,
                             ) as u32)
                                 .max(3);
@@ -231,30 +246,45 @@ fn main() {
 
                             {
                                 let mut last_image = last_image.write();
-                                if upscaling {
-                                    if frame_image.width() > last_image.width() {
+                                match (upscaling_x, upscaling_y) {
+                                    //TODO debug
+                                    _ => (),
+                                    (false, false)
+                                        if frame_image.width() < last_image.width()
+                                            && frame_image.height() < last_image.height() =>
+                                    {
                                         *last_image = frame_image.clone();
                                     }
-                                } else {
-                                    if frame_image.width() < last_image.width() {
+                                    (true, false)
+                                        if frame_image.width() > last_image.width()
+                                            && frame_image.height() < last_image.height() =>
+                                    {
+                                        *last_image = frame_image.clone();
+                                    }
+                                    (false, true)
+                                        if frame_image.width() < last_image.width()
+                                            && frame_image.height() > last_image.height() =>
+                                    {
+                                        *last_image = frame_image.clone();
+                                    }
+                                    (true, true)
+                                        if frame_image.width() > last_image.width()
+                                            && frame_image.height() > last_image.height() =>
+                                    {
                                         *last_image = frame_image.clone();
                                     }
                                 }
                             }
 
-                            let frame = if upscaling {
-                                image_to_frame(&frame_image.resize_exact(
-                                    (width * scale) as u32,
-                                    (height * scale) as u32,
-                                    FilterType::Nearest,
-                                ))
-                            } else {
-                                image_to_frame(&frame_image.resize_exact(
-                                    width as u32,
-                                    height as u32,
-                                    FilterType::Nearest,
-                                ))
-                            };
+                            let frame = image_to_frame(&frame_image.resize_exact(
+                                if upscaling_x { width * scale_x } else { width } as u32,
+                                if upscaling_y {
+                                    height * scale_y
+                                } else {
+                                    height
+                                } as u32,
+                                FilterType::Nearest,
+                            ));
 
                             gif_renderer_sender
                                 .send((i, frame))

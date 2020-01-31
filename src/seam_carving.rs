@@ -1,6 +1,5 @@
 #[cfg(feature = "imagers")]
 use image::{DynamicImage, ImageBuffer, Pixel, Rgba};
-use map_in_place::MapVecInPlace;
 use std::ops::{Bound, Deref, Range, RangeBounds};
 
 pub trait FastImagePixel: Copy + Clone {}
@@ -58,21 +57,21 @@ where
 
     /// Updates width and height of the image and fills the newly added empty space with `fill`.
     fn maximize(&mut self, width: usize, height: usize, fill: &T) {
-        #[cfg(feature = "fastimage_debug")]
         assert!(width >= self.width, height >= self.height);
 
         self.data = self
             .data
-            .chunks_exact(self.width)
+            .chunks_exact(self.width_stride)
             .flat_map(|row| {
                 row.iter()
                     .cloned()
-                    .chain(std::iter::repeat(*fill).take(width - self.width))
+                    .chain(std::iter::repeat(*fill).take(width.saturating_sub(self.width_stride)))
             })
+            .chain(std::iter::repeat(*fill).take(height.saturating_sub(self.height) * width))
             .collect();
 
+        self.width_stride = width;
         self.width = width;
-        self.width_stride = self.width_stride.max(self.width);
         self.height = height;
     }
 
@@ -80,7 +79,6 @@ where
     ///
     /// If this image was previously not wider than set with this function, it will be skewed to avoid rebuilding each row.
     fn maximize_fast(&mut self, width: usize, height: usize, fill: &T) {
-        #[cfg(feature = "fastimage_debug")]
         assert!(width >= self.width, height >= self.height);
 
         self.data
@@ -93,7 +91,6 @@ where
 
     /// Updates width and height of the image, but does not update its contents. (Cropping)
     fn minimize(&mut self, width: usize, height: usize) {
-        #[cfg(feature = "fastimage_debug")]
         assert!(width <= self.width, height <= self.height);
 
         self.width = width;
@@ -152,6 +149,22 @@ where
         } else {
             Some(unsafe { self.data.get_unchecked(rowoffs + start..rowoffs + end) })
         }
+    }
+
+    unsafe fn get_row_unchecked_mut(&mut self, mut x: Range<usize>, row: usize) -> &mut [T] {
+        #[cfg(feature = "fastimage_debug")]
+        assert!(
+            x.start <= self.width && x.end <= self.width && row < self.height,
+            "get_row_unchecked_mut coordinates out of bounds (start {}, end {}, y {})",
+            x.start,
+            x.end,
+            row
+        );
+
+        let rowoffs = row * self.width_stride;
+        x.end += rowoffs;
+        x.start += rowoffs;
+        self.data.get_unchecked_mut(x)
     }
 
     pub unsafe fn get_row_unchecked(&self, mut x: Range<usize>, row: usize) -> &[T] {
@@ -257,6 +270,18 @@ where
         self.width_stride = self.width;
     }
 
+    pub fn copy_from_image(&mut self, image: &FastImage<T>) {
+        assert!(!image.data.is_empty(), "copying from empty image");
+
+        self.data.extend(
+            std::iter::repeat(image.data[0]).take(image.data.len().saturating_sub(self.data.len())),
+        );
+        self.data[..image.data.len()].copy_from_slice(&image.data);
+        self.width_stride = image.width_stride;
+        self.width = image.width;
+        self.height = image.height;
+    }
+
     /// Creates a `FastImage` from an `image::ImageBuffer`. The `conversion` function is used to map an image's pixels to different values for the `FastImage`.
     #[cfg(feature = "imagers")]
     pub fn from_image<P: 'static, C: Deref<Target = [P::Subpixel]>, CvFn>(
@@ -304,25 +329,50 @@ where
 /// The minimum accepted image size is 3x1 (see `add_waterfall`)
 #[cfg(feature = "imagers")]
 pub fn easy_resize(image: &DynamicImage, new_width: usize, new_height: usize) -> DynamicImage {
-    DynamicImage::ImageRgba8(
-        resize(
-            &FastImage::from_image(&image.to_rgba(), |rgba| *rgba),
-            new_width,
-            new_height,
-            &|left, right| {
-                Rgba([
-                    ((right.0[0] as u16 + left.0[0] as u16 + 1) / 2) as u8,
-                    ((right.0[1] as u16 + left.0[1] as u16 + 1) / 2) as u8,
-                    ((right.0[2] as u16 + left.0[2] as u16 + 1) / 2) as u8,
-                    ((right.0[3] as u16 + left.0[3] as u16 + 1) / 2) as u8,
-                ])
-            },
-            &Rgba([0, 0, 0, 0]),
-            &|p| (((p.0[0] as u32 + p.0[1] as u32 + p.0[2] as u32) * p.0[3] as u32) / 256) as u16,
+    let mut image = FastImage::from_image(&image.to_rgba(), |rgba| *rgba);
+
+    resize(
+        &mut image,
+        new_width,
+        new_height,
+        &|left, right| {
+            Rgba([
+                ((right.0[0] as u16 + left.0[0] as u16 + 1) / 2) as u8,
+                ((right.0[1] as u16 + left.0[1] as u16 + 1) / 2) as u8,
+                ((right.0[2] as u16 + left.0[2] as u16 + 1) / 2) as u8,
+                ((right.0[3] as u16 + left.0[3] as u16 + 1) / 2) as u8,
+            ])
+        },
+        &|p| (p.0[0] as u32 + p.0[1] as u32 + p.0[2] as u32) * p.0[3] as u32,
+        &[
+            /*
+            // Sobel
             [-1, 0, 1, -2, 0, 2, -1, 0, 1],
-        )
-        .into_image(|rgba| *rgba),
-    )
+            [1, 2, 1, 0, 0, 0, -1, -2, -1],
+            */
+            /*
+            // 8-bit Scharr
+            [47, 0, -47, 162, 0, -162, 47, 0, 47],
+            [47, 162, 47, 0, 0, 0, -47, -162, -47],
+            */
+            // Sobel-Feldman
+            [-3, 0, 3, -10, 0, 10, -3, 0, 3],
+            [3, 10, 3, 0, 0, 0, -3, -10, -3],
+            /*
+            // Prewitt
+            [1, 0, -1, 1, 0, -1, 1, 0, -1],
+            [1, 1, 1, 0, 0, 0, -1, -1, -1],
+            */
+            /*
+            // idk
+            [0, 1, 0, 0, 0, 0, 0, -1, 0],
+            [0, 0, 0, 1, 0, -1, 0, 0, 0],
+            */
+        ],
+        &Rgba([0, 0, 0, 0]),
+    );
+
+    DynamicImage::ImageRgba8(image.into_image(|rgba| *rgba))
 }
 
 /// Resizes an image using the seam carving algorithm.
@@ -339,179 +389,178 @@ pub fn easy_resize(image: &DynamicImage, new_width: usize, new_height: usize) ->
 ///
 /// Due to the waterfall adding step, the luma values (u16) can get quite large, which is why the luma function is recommended to output values considerably smaller than u16::MAX (e.g. 0..512). Large luma values will saturate the waterfall image pixel values and decrease seam-finding quality.
 pub fn resize<T, I, LumaFn>(
-    image: &FastImage<T>,
+    image: &mut FastImage<T>,
     new_width: usize,
     new_height: usize,
     interpolation_fn: &I,
-    fill: &T,
     luma_fn: &LumaFn,
-    kernel: [i16; 3 * 3],
-) -> FastImage<T>
-where
+    kernel: &[[i32; 3 * 3]],
+    fill: &T,
+) where
     I: Fn(&T, &T) -> T,
     T: FastImagePixel,
-    LumaFn: Fn(&T) -> u16,
+    LumaFn: Fn(&T) -> u32,
 {
     let (width, height) = image.dimensions();
 
-    let mut image = image.clone();
-
     if new_width > width {
-        image = maximize_seam(image, new_width, interpolation_fn, fill, luma_fn, kernel);
+        maximize_seam(image, new_width, interpolation_fn, luma_fn, kernel, fill);
     } else if new_width < width {
-        image = minimize_seam(image, new_width, luma_fn, kernel);
+        minimize_seam(image, new_width, luma_fn, kernel);
     }
 
     image.rotate90_mut();
 
     if new_height > height {
-        image = maximize_seam(image, new_height, interpolation_fn, fill, luma_fn, kernel);
+        maximize_seam(image, new_height, interpolation_fn, luma_fn, kernel, fill);
     } else if new_height < height {
-        image = minimize_seam(image, new_height, luma_fn, kernel);
+        minimize_seam(image, new_height, luma_fn, kernel);
     }
 
     image.rotate270_mut();
-
-    image
 }
 
 pub fn maximize_seam<T, I, LumaFn>(
-    image: FastImage<T>,
+    image: &mut FastImage<T>,
     new_width: usize,
     interpolation_fn: &I,
-    fill: &T,
     luma_fn: &LumaFn,
-    kernel: [i16; 3 * 3],
-) -> FastImage<T>
-where
+    kernels: &[[i32; 3 * 3]],
+    fill: &T,
+) where
     I: Fn(&T, &T) -> T,
     T: FastImagePixel,
-    LumaFn: Fn(&T) -> u16,
+    LumaFn: Fn(&T) -> u32,
 {
-    let current_width = image.width;
+    let current_width = image.dimensions().0;
 
-    let mut out_a = image;
+    image.maximize(new_width, image.height, fill);
 
-    let mut out_b = FastImage::new(out_a.width + 1, out_a.height, out_a.data[0]);
+    let mut energy_image = FastImage::new(new_width, image.height, 0);
+    energy(image, &mut energy_image, luma_fn, kernels, None);
 
-    let mut swap = false;
+    let mut waterfall_added = energy_image.clone();
+    let mut last_seam_path = vec![0; image.height];
 
-    for _seam_idx in current_width + 1..=new_width {
-        // calculate pixel energies
-        let mut energies = energy(if swap { &out_b } else { &out_a }, luma_fn, kernel);
+    for i in current_width..new_width {
+        image.width = i - 1;
+        energy_image.width = i - 1;
+        waterfall_added.copy_from_image(&energy_image);
 
-        // add up energies
-        add_waterfall(&mut energies);
-
-        // find seam path
-        let seam_path = seam_path(&energies);
-
-        // shift to seam
-        if swap {
-            shift_maximize(&out_b, &mut out_a, &seam_path, interpolation_fn, fill);
-        } else {
-            shift_maximize(&out_a, &mut out_b, &seam_path, interpolation_fn, fill);
-        }
-
-        swap = !swap;
-    }
-
-    if swap {
-        out_b
-    } else {
-        out_a
+        add_waterfall(&mut waterfall_added);
+        seam_path(&waterfall_added, &mut last_seam_path);
+        shift_maximize(image, &last_seam_path, interpolation_fn);
+        shift_maximize(&mut energy_image, &last_seam_path, &|_, _| 0);
+        energy(
+            image,
+            &mut energy_image,
+            luma_fn,
+            kernels,
+            Some((&last_seam_path, true)),
+        );
     }
 }
 
 /// Splits the image top (0) to bottom (seam_path.len() - 1) along the seam and shifts the right part one pixel to the right.
 ///
 /// interpolation_fn is a function which should take the left and right pixel which have been split, and return a color for the seam.
-pub fn shift_maximize<I, T>(
-    image: &FastImage<T>,
-    output: &mut FastImage<T>,
-    seam_path: &[usize],
-    interpolation_fn: I,
-    fill: &T,
-) where
+pub fn shift_maximize<I, T>(image: &mut FastImage<T>, seam_path: &[usize], interpolation_fn: &I)
+where
     I: Fn(&T, &T) -> T,
     T: FastImagePixel,
 {
-    assert_eq!(seam_path.len(), image.height, "invalid seam path length");
-
     let (width, height) = image.dimensions();
-    output.maximize_fast(width + 1, height, fill);
 
-    let mut out_row_buf = output.data[..width].to_vec();
+    assert_eq!(seam_path.len(), height, "invalid seam path length");
+    assert!(height > 1, "invalid image dimensions");
+    assert!(
+        image.width_stride > width,
+        "the image must have an internal stride which is larger than its width"
+    );
 
-    for (row_idx, seam_pos) in (0..height).zip(seam_path.into_iter().cloned()) {
-        unsafe {
-            out_row_buf
-                .get_unchecked_mut(..)
-                .copy_from_slice(image.get_row_unchecked(0..width, row_idx));
+    let mut out_row_buf = vec![*unsafe { image.get_pixel_unchecked(0, 0) }; width];
 
-            out_row_buf.insert(
-                seam_pos,
-                if seam_pos != 0 {
-                    let (left, right) = out_row_buf
-                        .get_unchecked((seam_pos - 1)..(seam_pos + 1).min(width))
-                        .split_at(1);
+    image
+        .data
+        .chunks_mut(image.width_stride)
+        .zip(seam_path.into_iter().cloned())
+        .for_each(|(row, seam_pos)| {
+            unsafe {
+                out_row_buf
+                    .get_unchecked_mut(..)
+                    .copy_from_slice(&row[..width]);
 
-                    interpolation_fn(&left.get_unchecked(0), &right.get_unchecked(0))
-                } else {
-                    *out_row_buf.get_unchecked(0)
-                },
-            );
+                out_row_buf.insert(
+                    seam_pos,
+                    if seam_pos != 0 {
+                        let (left, right) = out_row_buf
+                            .get_unchecked((seam_pos - 1)..(seam_pos + 1).min(width))
+                            .split_at(1);
 
-            output.set_row_unchecked(0..width + 1, row_idx, &out_row_buf);
+                        interpolation_fn(&left.get_unchecked(0), &right.get_unchecked(0))
+                    } else {
+                        *out_row_buf.get_unchecked(0)
+                    },
+                );
+
+                row.get_unchecked_mut(..width + 1)
+                    .copy_from_slice(&out_row_buf);
+            }
 
             out_row_buf.pop();
-        }
-    }
+        });
+
+    image.width += 1;
 }
 
 pub fn minimize_seam<T, LumaFn>(
-    image: FastImage<T>,
+    image: &mut FastImage<T>,
     new_width: usize,
     luma_fn: &LumaFn,
-    kernel: [i16; 3 * 3],
-) -> FastImage<T>
-where
-    LumaFn: Fn(&T) -> u16,
+    kernels: &[[i32; 3 * 3]],
+) where
+    LumaFn: Fn(&T) -> u32,
     T: FastImagePixel,
 {
-    let current_width = image.dimensions().0;
+    let mut energy_image = FastImage::new(image.width, image.height, 0);
+    energy(image, &mut energy_image, luma_fn, kernels, None);
 
-    let mut out_a = image;
-    let mut out_b = FastImage::new(out_a.width, out_a.height, out_a.data[0]);
+    let mut waterfall_added = energy_image.clone();
+    let mut last_seam_path = vec![0; image.height];
 
-    let mut swap = false;
-
-    for _seam_idx in (new_width..current_width).rev() {
-        // calculate pixel energies
-        let mut energies = energy(if swap { &out_b } else { &out_a }, luma_fn, kernel);
-        // add up energies
-        add_waterfall(&mut energies);
-        // find seam path
-        let seam_path = seam_path(&energies);
-
-        // shift to seam
-        if swap {
-            shift_minimize(&out_b, &mut out_a, seam_path);
-        } else {
-            shift_minimize(&out_a, &mut out_b, seam_path);
-        }
-
-        swap = !swap;
+    for _ in (new_width..image.width).rev() {
+        waterfall_added.copy_from_image(&energy_image);
+        add_waterfall(&mut waterfall_added);
+        seam_path(&waterfall_added, &mut last_seam_path);
+        shift_minimize(image, &last_seam_path);
+        shift_minimize(&mut energy_image, &last_seam_path);
+        energy(
+            image,
+            &mut energy_image,
+            luma_fn,
+            kernels,
+            Some((&last_seam_path, false)),
+        );
     }
 
-    if swap {
-        out_b
-    } else {
-        out_a
-    }
+    /* *image = FastImage::from_data(
+        energy_image.width,
+        energy_image.height,
+        energy_image
+            .data
+            .into_iter()
+            .map(|p| unsafe {
+                *(&Rgba([(p / 10000) as u8, (p / 10000) as u8, (p / 10000) as u8, 255]) as *const _
+                    as *const _)
+            })
+            .collect(),
+    )
+    .unwrap();
+
+    image.width_stride = energy_image.width_stride;*/
 }
 
-pub fn shift_minimize<T>(image: &FastImage<T>, output: &mut FastImage<T>, seam_path: Vec<usize>)
+pub fn shift_minimize<T>(image: &mut FastImage<T>, seam_path: &[usize])
 where
     T: FastImagePixel,
 {
@@ -519,43 +568,40 @@ where
     let (width, height) = image.dimensions();
     assert!(image.width >= 1, "image dimensions too small");
 
-    output.minimize(width - 1, height);
-
-    for (row_idx, seam_pos) in (0..height).zip(seam_path.into_iter()) {
-        unsafe {
-            output.set_row_unchecked(
-                0..seam_pos,
-                row_idx,
-                image.get_row_unchecked(0..seam_pos, row_idx),
-            );
-
-            output.set_row_unchecked(
-                seam_pos..width - 1,
-                row_idx,
-                image.get_row_unchecked((seam_pos + 1).min(width)..width, row_idx),
-            );
+    for (row_idx, &seam_pos) in (0..height).zip(seam_path.into_iter()) {
+        if seam_pos < width {
+            unsafe {
+                image
+                    .get_row_unchecked_mut(seam_pos..width, row_idx)
+                    .rotate_left(1);
+            }
         }
     }
+
+    image.minimize(width - 1, height);
 }
 
-/// Traverses the image's lines from bottom to top to find a seam.
-pub fn seam_path(image: &FastImage<u16>) -> Vec<usize> {
-    let (width, height) = image.dimensions();
-
-    let mut output: Vec<usize> = vec![0; height as usize];
+/// Traverses the image's lines from bottom to top to find the most energetic seam.
+pub fn seam_path(energy_image: &FastImage<u32>, seam: &mut [usize]) {
+    let (width, height) = energy_image.dimensions();
+    assert!(
+        energy_image.height >= 2 && energy_image.width >= 3,
+        "image dimensions too small"
+    );
+    assert_eq!(seam.len(), energy_image.height, "invalid iamge dimensions");
 
     // find the least energetic pixel in the bottom row of pixels
-    let mut least_energetic_idx = unsafe { image.get_row_unchecked(0..width, height - 1) }
+    let mut least_energetic_idx = unsafe { energy_image.get_row_unchecked(0..width, height - 1) }
         .iter()
         .enumerate()
         .min_by_key(|(_, p)| **p)
         .unwrap()
         .0;
 
-    output[height as usize - 1] = least_energetic_idx;
+    seam[height as usize - 1] = least_energetic_idx;
 
     // find a seam from bottom to top
-    for y in (0..(height - 1)).rev() {
+    for y in (0..height - 1).rev() {
         unsafe {
             let range = least_energetic_idx.saturating_sub(1)..if least_energetic_idx < width - 1 {
                 least_energetic_idx + 2
@@ -564,19 +610,17 @@ pub fn seam_path(image: &FastImage<u16>) -> Vec<usize> {
             };
 
             least_energetic_idx = range.start
-                + image
-                    .get_row_unchecked(range, y)
+                + energy_image
+                    .get_row_unchecked(range, y + 1)
                     .iter()
                     .enumerate()
                     .min_by_key(|(_, p)| **p)
                     .unwrap()
                     .0;
 
-            output[y as usize] = least_energetic_idx;
+            seam[y as usize] = least_energetic_idx;
         }
     }
-
-    output
 }
 
 /// Iterates over every line from top to bottom. Each pixel in a line adds the value of the lowest of the three pixels above to itself.
@@ -590,7 +634,7 @@ pub fn seam_path(image: &FastImage<u16>) -> Vec<usize> {
 /// // we check for the pixel in the center of the second line
 /// assert_eq!(image.get_pixel(1, 1), 10 + 1);
 /// ```
-pub fn add_waterfall(image: &mut FastImage<u16>) {
+pub fn add_waterfall(image: &mut FastImage<u32>) {
     assert!(
         image.width >= 3 && image.height >= 1,
         "image dimensions too small"
@@ -645,17 +689,18 @@ pub fn add_waterfall(image: &mut FastImage<u16>) {
 /// Applies the given function `luma_fn` to convert each pixel into its luma representation and then applies the given 3x3 filtering kernel `kernel` to convert the luma representation to an energy image.
 pub fn energy<T, LumaFn>(
     image: &FastImage<T>,
+    output: &mut FastImage<u32>,
     luma_fn: &LumaFn,
-    kernel: [i16; 3 * 3],
-) -> FastImage<u16>
-where
-    LumaFn: Fn(&T) -> u16,
+    kernels: &[[i32; 3 * 3]],
+    seam: Option<(&[usize], bool)>,
+) where
+    LumaFn: Fn(&T) -> u32,
     T: FastImagePixel,
 {
     let (width, height) = image.dimensions();
+    let width_stride = image.width_stride;
 
-    let mut image_luma: FastImage<u16> = FastImage::new(width, height, 0);
-    let mut output: FastImage<i16> = FastImage::new(width, height, 0);
+    let mut image_luma: FastImage<u32> = FastImage::new(width, height, 0);
 
     let mut temp_buf = vec![0; width];
     for row_idx in 0..image_luma.height {
@@ -681,25 +726,90 @@ where
         (-(width as i32) - 1, 1, 1),
     ];
 
-    for ((kernel_offset, kx, ky), kernel) in
-        kernel_offsets.iter().cloned().zip(kernel.iter().cloned())
-    {
-        for row_idx in (ky.max(0)..(height as i32 + ky.min(0))).map(|row| row as usize * width) {
-            for x in kx.max(0) as usize..(width as i32 + kx.min(0)) as usize {
-                unsafe {
-                    *output
-                        .data
-                        .get_unchecked_mut(((row_idx + x) as i32 + kernel_offset) as usize) +=
-                        *image_luma.data.get_unchecked(row_idx + x) as i16 * kernel;
+    if let Some((seam, wide)) = seam {
+        // operate in seam mode: only calculate the pixels lying to the side of, and on, the seam
+
+        for kernel in kernels {
+            for ((kernel_offset, kx, ky), kernel) in
+                kernel_offsets.iter().cloned().zip(kernel.iter().cloned())
+            {
+                for (row_idx, &seam_idx) in
+                    (ky.max(0)..(height as i32 + ky.min(0))).zip(seam.into_iter())
+                {
+                    for x in kx.max(seam_idx as i32 - 1).max(0) as usize
+                        ..(seam_idx as i32 + if wide { 3 } else { 2 }).min(width as i32 + kx.min(0))
+                            as usize
+                    {
+                        unsafe {
+                            *(output.data.get_unchecked_mut(
+                                (row_idx as usize * output.width_stride + x) as usize,
+                            ) as *mut u32 as *mut i32) += *image_luma.data.get_unchecked(
+                                ((row_idx as usize * image_luma.width_stride + x) as i32
+                                    + kernel_offset) as usize,
+                            ) as i32
+                                * kernel;
+                        }
+                    }
                 }
+            }
+
+            unsafe {
+                output.data.iter_mut().for_each(|x| {
+                    *(x as *mut u32 as *mut i32) = (*(x as *mut u32 as *mut i32)).abs()
+                });
+            }
+        }
+    } else {
+        for kernel in kernels {
+            for ((kernel_offset, kx, ky), kernel) in
+                kernel_offsets.iter().cloned().zip(kernel.iter().cloned())
+            {
+                for row_idx in ky.max(0)..(height as i32 + ky.min(0)) {
+                    for x in kx.max(0) as usize..(width as i32 + kx.min(0)) as usize {
+                        unsafe {
+                            *(output.data.get_unchecked_mut(
+                                (row_idx as usize * output.width_stride + x) as usize,
+                            ) as *mut u32 as *mut i32) += *image_luma.data.get_unchecked(
+                                ((row_idx as usize * image_luma.width_stride + x) as i32
+                                    + kernel_offset) as usize,
+                            ) as i32
+                                * kernel;
+                        }
+                    }
+                }
+            }
+
+            unsafe {
+                output
+                    .data
+                    .iter_mut()
+                    .for_each(|x| *x = (*(&*x as *const u32 as *const i32)).abs() as u32);
             }
         }
     }
 
-    FastImage {
-        width,
-        height,
-        width_stride: width,
-        data: output.data.map_in_place(|int| int.abs() as u16),
-    }
+    /*
+    // squared error algorithm
+    let kernel_offsets = [
+        (width as i32, 0, -1),
+        (1, -1, 0),
+        (-1, 1, 0),
+        (-(width as i32), 0, 1),
+    ];
+
+    for (kernel_offset, kx, ky) in kernel_offsets.iter().cloned() {
+        for row_idx in (ky.max(0)..(height as i32 + ky.min(0))).map(|row| row as usize * width) {
+            for x in kx.max(0) as usize..(width as i32 + kx.min(0)) as usize {
+                unsafe {
+                    *output.data.get_unchecked_mut((row_idx + x) as usize) +=
+                        (*image_luma.data.get_unchecked((row_idx + x) as usize) as i32
+                            - *image_luma
+                                .data
+                                .get_unchecked(((row_idx + x) as i32 + kernel_offset) as usize)
+                                as i32)
+                            .pow(2);
+                }
+            }
+        }
+    }*/
 }
