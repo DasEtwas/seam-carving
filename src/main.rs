@@ -247,8 +247,6 @@ fn main() {
                             {
                                 let mut last_image = last_image.write();
                                 match (upscaling_x, upscaling_y) {
-                                    //TODO debug
-                                    _ => (),
                                     (false, false)
                                         if frame_image.width() < last_image.width()
                                             && frame_image.height() < last_image.height() =>
@@ -273,6 +271,7 @@ fn main() {
                                     {
                                         *last_image = frame_image.clone();
                                     }
+                                    _ => (),
                                 }
                             }
 
